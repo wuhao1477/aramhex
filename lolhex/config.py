@@ -149,6 +149,13 @@ class Settings:
     data_band: str = ""
     # 识别频率（见 SPEEDS）：standard / saver / low。
     speed: str = "standard"
+    # 第三方 AI 推荐（advisor.py，密钥在 .env）：auto=三选一出现且没分析过就分析；manual=只在点按钮时分析；off=不用。
+    ai_mode: str = "auto"
+    # 局域网网页（web.py）：开启后用浏览器访问；web_lan 允许同一局域网的手机访问；令牌第一次开启时自动生成。
+    web_enabled: bool = False
+    web_lan: bool = False
+    web_port: int = 8765
+    web_token: str = ""
     # 查分：自己的「名字#编号」和上次查到的结果（{"as_of", "results", "queried_at"}）
     riot_id: str = ""
     my_rank: dict = field(default_factory=dict)
@@ -221,6 +228,8 @@ class Settings:
         s.game_lang = normalize_lang(s.game_lang)  # 以前的繁中选项 zh_TW、手改的怪值都当中文
         # 1.1.1：设置页去掉「显示胜率数字」（用这个软件就是要看胜率），以前关掉的也打开
         s.show_winrate = True
+        if s.ai_mode not in ("auto", "manual", "off"):
+            s.ai_mode = "auto"  # 手改坏了：按默认
         if s.data_band == "top":
             s.data_band = "high"  # 1.1.1 去掉「顶尖」，和「高分」合成「前 5%」
         if broken:

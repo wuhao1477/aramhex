@@ -19,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import cloud, i18n, recommend
+from . import advisor, cloud, i18n, recommend
 from .config import Settings, app_home
 from .data.public import PublicStore
 from .data.store import DataStore
@@ -92,6 +92,13 @@ def rank_grade(rank, total) -> str | None:
     return next(g for lim, g in GRADES if q <= lim)
 
 
+def _ai_key_str(hid, slots) -> str | None:
+    """三选一的标识：英雄 + 三张卡的 ID。缺卡时返回 None，不分析。"""
+    if not slots or not all(slots):
+        return None
+    return f"{hid or ''}:{','.join(map(str, slots))}"
+
+
 def _unread(offer: dict, i: int) -> str:
     """日志里没认出的卡：带上 OCR 读到的原文（截短），方便查是哪个海克斯名对不上。"""
     texts = offer.get("texts") or []
@@ -100,6 +107,11 @@ def _unread(offer: dict, i: int) -> str:
 
 
 class Engine:
+    # 类上的默认值：部分测试用 Engine.__new__ 跳过 __init__，这些属性要能照常读
+    _web = None  # 局域网网页（web.py），start() 时按设置启动
+    _ai_key: str | None = None  # 正在分析（或最近分析）的三选一
+    _ai_cache: dict | None = None  # 三选一 → AI 结果：同一组卡不重复问，手动刷新才覆盖（第一次分析时建）
+
     def __init__(self, settings: Settings, home: Path | None = None, store: DataStore | None = None):
         self.settings = settings
         self.home = home or app_home()
@@ -143,6 +155,7 @@ class Engine:
             "vision": {"status": "idle", "calibrated": False, "last_scan": None, "blank": False},
             "offer": None, "evaluation": None,
             "champ_select": None,  # {"bench": [...], "team": [...]}，每项带胜率和排名
+            "ai": {"status": "idle", "key": None, "result": None, "error": None},  # 第三方 AI，见下面
         }
 
     # ---------- 生命周期 ----------
@@ -154,10 +167,15 @@ class Engine:
         for name, fn in (("data", self._data_loop), ("observer", self._observer_loop),
                          ("vision", self._vision_loop)):
             threading.Thread(target=fn, name=name, daemon=True).start()
+        from . import web
+        self._web = web.start_from_settings(self, self.settings)  # 局域网网页：设置里没开就是 None
 
     def stop(self) -> None:
         self._stop.set()
         self._data_wake.set()
+        if self._web is not None:
+            self._web.stop()
+            self._web = None
 
     def cloud_changed(self) -> None:
         """收到云控后让后台重算资料到期时间，不能继续等待旧的长间隔。"""
@@ -170,6 +188,12 @@ class Engine:
         s["settings"] = {"show_winrate": self.settings.show_winrate, "badge_position": self.settings.badge_position}
         s["hero"] = self.store.heroes.get(s["hero_id"] or "")
         s["candidates"] = [self.store.heroes.get(h, {"id": h}) for h in s["hero_candidates"]]
+        # AI 结果只显示给当前这组卡；卡换了就回到空闲，不让旧结果留在界面上
+        cur = _ai_key_str(s["hero_id"], s["offer"]["slots"]) if s["offer"] else None
+        ai = s.get("ai") or {}
+        if ai.get("key") != cur:
+            ai = {"status": "idle", "key": None, "result": None, "error": None}
+        s["ai"] = {**ai, "mode": self.settings.ai_mode, "configured": advisor.configured() is not None}
         return s
 
     def _set(self, **kw) -> None:
@@ -202,6 +226,61 @@ class Engine:
         if hid:
             threading.Thread(target=self._prefetch_hero, args=(hid,), daemon=True).start()
         self._reevaluate()
+
+    # ---------- 第三方 AI（可选，见 advisor.py）----------
+
+    def ai_refresh(self) -> None:
+        """手动触发：对当前三选一重新问一次 AI，覆盖缓存。关闭模式下不做事。"""
+        if self.settings.ai_mode != "off":
+            self._ai_start(force=True)
+
+    def _ai_auto(self) -> None:
+        if self.settings.ai_mode == "auto":
+            self._ai_start(force=False)
+
+    def _ai_start(self, force: bool) -> None:
+        with self._lock:
+            offer = self.state.get("offer")
+            if self.state["phase"] != "ingame" or not offer:
+                return
+            hid = self.state.get("hero_id")
+            key = _ai_key_str(hid, offer["slots"])
+            if key is None:
+                return  # 三张卡还没认全
+            if self._ai_cache is None:
+                self._ai_cache = {}
+            if not force and key in self._ai_cache:
+                self.state["ai"] = {"status": "done", "key": key, "result": self._ai_cache[key], "error": None}
+                return
+            if self._ai_key == key and (self.state.get("ai") or {}).get("status") == "running":
+                return
+            self._ai_key = key
+            cfg = advisor.configured()
+            if cfg is None:
+                self.state["ai"] = {"status": "unconfigured", "key": key, "result": None, "error": None}
+                return
+            self.state["ai"] = {"status": "running", "key": key, "result": None, "error": None}
+            slots = list(offer["slots"])
+        threading.Thread(target=self._ai_worker, args=(cfg, key, hid, slots), name="ai", daemon=True).start()
+
+    def _ai_worker(self, cfg, key: str, hid, slots: list) -> None:
+        hero = ((self.store.heroes.get(str(hid)) or {}).get("name") or "") if hid else ""
+        augs = [{"name": a.get("name") or "", "desc": a.get("desc") or ""}
+                for a in ((self.store.augments.get(str(s)) or {}) for s in slots)]
+        try:
+            result, status, error = advisor.analyze(cfg, hero, augs), "done", None
+        except advisor.AdvisorError as e:
+            result, status, error = None, "error", str(e)
+        except Exception:  # 网络库以外的意外也不能让后台线程静默死掉
+            log.exception("第三方 AI 分析出错")
+            result, status, error = None, "error", "分析出错，详见日志"
+        with self._lock:
+            if result is not None:
+                if len(self._ai_cache) >= 64:
+                    self._ai_cache.pop(next(iter(self._ai_cache)))  # 先进先出，64 组够用了
+                self._ai_cache[key] = result
+            if self._ai_key == key:  # 中途换卡了就只缓存，不显示旧结果
+                self.state["ai"] = {"status": status, "key": key, "result": result, "error": error}
 
     def correct_slot(self, index: int, augment_id: str | None) -> None:
         with self._lock:
@@ -966,4 +1045,5 @@ class Engine:
                               + (f" {s['score']:+.1f}" if s.get("score") is not None else "")
                               + (f"（{s['basis']}）" if s.get("basis") else "") for i, s in enumerate(ev["slots"])),
                      ev["advice"])
+        self._ai_auto()
         return ev

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, 
                                QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QProgressBar, QScrollArea,
                                QPushButton, QSizePolicy, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
-from .. import DATA_HOMEPAGE, HOMEPAGE, __version__, cloud, cloudsettings, i18n, logupload, patch, rank, recommend, update
+from .. import DATA_HOMEPAGE, HOMEPAGE, __version__, cloud, cloudsettings, i18n, logupload, patch, rank, recommend, update, web
 from ..config import SPEEDS, app_home, is_portable
 from ..vision import window as win
 from ..data.public import BANDS, norm_band
@@ -32,6 +32,15 @@ from .data_status import data_status_html
 from .herosearch import hero_completer
 
 RARITY_CN = {"silver": "白银", "gold": "黄金", "prismatic": "棱彩"}
+AI_MODES = [("auto", "自动（三选一认全后分析一次）"), ("manual", "手动（点按钮才分析）"), ("off", "关闭")]
+
+
+def _web_hint(s) -> str:
+    if not s.web_enabled:
+        return "保存后重启助手生效"
+    host = web.lan_ip() if s.web_lan else "127.0.0.1"
+    tok = f"?t={s.web_token}" if s.web_token else "（第一次开启时生成令牌）"
+    return f"保存后重启生效。浏览器打开：http://{host}:{s.web_port}/{tok}"
 # 云控强制设置时提示用的名字
 SETTING_NAMES = {"show_winrate": "显示胜率数字", "overlay": "显示游戏内浮窗", "overlay_corner": "浮窗位置",
                  "badge_position": "三选一标签", "speed": "识别频率",
@@ -342,6 +351,10 @@ class MainWindow(QMainWindow):
         self.offer_advice = QLabel("未在选海克斯")
         self.offer_advice.setWordWrap(True)
         l2.addWidget(self.offer_advice)
+        self.ai_label = QLabel()  # 第三方 AI 的结果（只针对当前这组卡）
+        self.ai_label.setWordWrap(True)
+        self.ai_label.setStyleSheet("color:#2b6cb0")
+        l2.addWidget(self.ai_label)
         grid = QGridLayout()
         self.offer_cards = []
         for i in range(3):
@@ -360,8 +373,11 @@ class MainWindow(QMainWindow):
         b1.clicked.connect(self.engine.rescan)
         b2 = QPushButton("重新校准卡片位置")
         b2.clicked.connect(self._recalibrate)
+        self.btn_ai = QPushButton("刷新 AI 分析")
+        self.btn_ai.clicked.connect(self.engine.ai_refresh)
         btns.addWidget(b1)
         btns.addWidget(b2)
+        btns.addWidget(self.btn_ai)
         btns.addStretch(1)
         l2.addLayout(btns)
         l2.addStretch(1)
@@ -413,6 +429,17 @@ class MainWindow(QMainWindow):
         for key, (label, _) in SPEEDS.items():
             self.set_speed.addItem(label, key)
         self.set_speed.setCurrentIndex(max(0, self.set_speed.findData(s.speed)))
+        self.set_ai = QComboBox()
+        for code, label in AI_MODES:
+            self.set_ai.addItem(label, code)
+        self.set_ai.setCurrentIndex(max(0, self.set_ai.findData(s.ai_mode)))
+        self.set_web = QCheckBox("开启局域网网页（手机浏览器看状态、问 AI）")
+        self.set_web.setChecked(s.web_enabled)
+        self.set_web_lan = QCheckBox("允许同一 Wi-Fi 下的其他设备访问（否则只有本机能打开）")
+        self.set_web_lan.setChecked(s.web_lan)
+        self.web_hint = QLabel(_web_hint(s))
+        self.web_hint.setWordWrap(True)
+        self.web_hint.setStyleSheet("color:#555")
         self.set_auto = QCheckBox("开机自动启动")
         self.set_auto.setChecked(autostart.is_enabled())
         self.set_data = QCheckBox("自动获取最新海克斯数据（建议开启）")
@@ -443,6 +470,10 @@ class MainWindow(QMainWindow):
         f.addRow("游戏语言", self.set_lang)
         f.addRow("", lang_row)
         f.addRow("识别频率", self.set_speed)
+        f.addRow("第三方 AI", self.set_ai)
+        f.addRow("", self.set_web)
+        f.addRow("", self.set_web_lan)
+        f.addRow("", self.web_hint)
         f.addRow("浮窗位置", self.set_corner)
         badge_left.addWidget(self.set_badge)
         badge_left.addWidget(self.set_auto)
@@ -812,6 +843,9 @@ class MainWindow(QMainWindow):
         if hasattr(self.engine.store, "check_updates"):
             self.engine.store.check_updates = s.check_data_updates  # 马上生效，不用重开
         s.speed = self.set_speed.currentData() or "standard"
+        s.ai_mode = self.set_ai.currentData() or "auto"
+        s.web_enabled = self.set_web.isChecked()
+        s.web_lan = self.set_web_lan.isChecked()
         s.overlay_corner = "top-right" if self.set_corner.currentIndex() == 0 else "top-left"
         s.badge_position = self.set_badge.currentData() or "top"
         lang = self.set_lang.currentData() or "zh_CN"
@@ -1055,6 +1089,7 @@ class MainWindow(QMainWindow):
         if not self.isVisible():
             return
         snap = self.engine.snapshot()
+        self._render_ai(snap)
         self._ensure_completer()
         dd = snap.get("data", {})
         v = snap.get("vision", {})
@@ -1124,6 +1159,34 @@ class MainWindow(QMainWindow):
                 out.append(f"　{a['name']} <span style='color:#777'>{RARITY_CN.get(a.get('rarity'), '')}"
                            f" {a.get('tier') or ''}</span> <b style='color:#2e9d5b'>{a['delta']:+.1f}</b>")
         return "<br>".join(out)
+
+    def _render_ai(self, snap: dict) -> None:
+        """第三方 AI 的结果：只显示当前这组卡的；关闭、没配置、没有三选一时说明原因。"""
+        ai = snap.get("ai") or {}
+        slots = (snap.get("offer") or {}).get("slots") or []
+        ready = bool(slots) and all(slots)
+        mode = ai.get("mode", "auto")
+        configured = bool(ai.get("configured"))
+        self.btn_ai.setEnabled(mode != "off" and configured and ready and ai.get("status") != "running")
+        status = ai.get("status")
+        if mode == "off":
+            text = "第三方 AI：已关闭（设置里可以打开）"
+        elif not configured:
+            text = "第三方 AI 未配置：在程序目录的 .env 里填写 AI_BASE_URL、AI_API_KEY、AI_MODEL"
+        elif status == "running":
+            text = "AI 分析中…"
+        elif status == "done" and ai.get("result"):
+            r = ai["result"]
+            name = (self.engine.store.augments.get(str(slots[r["pick"]])) or {}).get("name") or ""
+            text = f"AI 推荐：第 {r['pick'] + 1} 张「{name}」。{r.get('reason') or ''}"
+        elif status == "error":
+            text = f"AI 出错：{ai.get('error') or ''}"
+        elif not ready:
+            text = ""
+        else:
+            text = "自动模式：三选一认全后分析一次" if mode == "auto" else "手动模式：点「刷新 AI 分析」"
+        self.ai_label.setText(text)
+        self.ai_label.setVisible(bool(text))
 
     def _render_offer(self, ev, show_win, pending=None):
         if not ev:
