@@ -421,11 +421,34 @@ class Engine:
         if capture.is_blank(img):
             return
         t0 = time.monotonic()
-        cs = self.analyze_champ_select(img, (rect.left, rect.top))
+        img, origin = self._client_crop(img, (rect.left, rect.top))
+        cs = self.analyze_champ_select(img, origin)
         dt = time.monotonic() - t0
         if dt > 0.8:
             log.info("选英雄：这次识别用了 %.1f 秒", dt)
         self._apply_champ_select(cs, img)
+
+    def _client_crop(self, img, origin):
+        """macOS 虚拟机：截图里 LoL 客户端只占一块，先找到它的位置，之后只在客户端内部识别（版式按客户端换算）。
+        找到后按截图尺寸缓存；尺寸没变就直接用，找不到的话最多每 5 秒重试一次。Windows 上截图本身就是客户端，不处理。"""
+        from .vision import capture, clientfind
+        if not capture.IS_MACOS:
+            return img, origin
+        key = img.shape[:2]
+        cache = getattr(self, "_client_box", None)  # (截图尺寸, 矩形 或 None, 上次失败的时间)
+        if cache and cache[0] == key and cache[1] is not None:
+            box = cache[1]
+        else:
+            now = time.monotonic()
+            if cache and cache[0] == key and now - cache[2] < 5.0:
+                return img, origin
+            box = clientfind.find_client(img)
+            self._client_box = (key, box, now if box is None else 0.0)
+            if box is None:
+                return img, origin
+            log.info("虚拟机里找到 LoL 客户端：%s", box)
+        x, y, w, h = box
+        return img[y:y + h, x:x + w], (origin[0] + x, origin[1] + y)
 
     CS_NEW_AFTER = 8.0   # 扫描确认离开选英雄界面超过这么多秒再进来，算新的一把（中途偶尔一次没认出界面不算）
     CS_NEW_GAP = 90.0    # 这么久完全没看到选英雄界面（切到别的窗口、排队）再看到，也算新的一把：大乱斗选英雄不会这么长
