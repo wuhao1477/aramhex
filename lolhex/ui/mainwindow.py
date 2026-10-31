@@ -221,7 +221,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         lay = QVBoxLayout(root)
         lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setSpacing(8)  # 顶部几块卡片之间少留点空，小窗口时让下面的标签页（设置页的表单区）多一点高度
 
         # 顶部状态
         head = QHBoxLayout()
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
         # 版本和检查更新固定在页底，设置项较多时只滚动上面的表单。
         card = _card()
         about_row = QHBoxLayout(card)
-        about_row.setContentsMargins(18, 12, 18, 12)
+        about_row.setContentsMargins(18, 8, 18, 8)  # 上下少留空：页底固定区越矮，上面的表单滚动区越高（小窗口时）
         cv = QVBoxLayout()
         cv.setSpacing(8)
         about_row.addLayout(cv, 1)
