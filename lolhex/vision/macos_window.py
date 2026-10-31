@@ -76,6 +76,38 @@ def _match(owner_sub: str, title_sub: str) -> int:
 # 也可以直接指定「整块显示器」——全屏游戏时这比按窗口抓更省事，也不受标题栏影响。
 # 显示器用负数句柄表示：-1 = 第 0 块屏，-2 = 第 1 块屏，以此类推。
 _choice_cache: tuple[float, int] | None = None
+_choice_doc: tuple[float, dict] | None = None
+
+
+def choice_doc() -> dict:
+    """读 window_choice.json 原文（2 秒缓存）。没有就返回空 dict。"""
+    global _choice_doc
+    now = time.monotonic()
+    if _choice_doc and now - _choice_doc[0] < 2.0:
+        return _choice_doc[1]
+
+    from ..config import app_home
+    path = app_home() / "window_choice.json"
+    try:
+        import json
+        want = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(want, dict):
+            want = {}
+    except (OSError, ValueError, ImportError):
+        want = {}
+    _choice_doc = (now, want)
+    return want
+
+
+def locked() -> bool:
+    """是否「锁定」：锁定后不再要求游戏窗口在前台。
+
+    为什么需要：上游按「游戏窗口不在前台就暂停」省 OCR。但虚拟机里跑游戏时，
+    只要鼠标没点在虚拟机上，Parallels 就不是前台，识别就一直停在
+    「游戏不在前台，暂停」。选定窗口/整屏并锁定后，就按选中的那块一直抓。
+    整屏（负句柄）本来就没有对应进程，一直是前台。
+    """
+    return bool(choice_doc().get("lock"))
 
 
 def _chosen_window() -> int:
@@ -85,12 +117,8 @@ def _chosen_window() -> int:
     if _choice_cache and now - _choice_cache[0] < 2.0:
         return _choice_cache[1]
 
-    from ..config import app_home
-    path = app_home() / "window_choice.json"
-    try:
-        import json
-        want = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, ImportError):
+    want = choice_doc()
+    if not want:
         return 0
 
     if want.get("kind") == "display":
@@ -297,10 +325,11 @@ def is_foreground(wid: int) -> bool:
     """窗口所属进程是否在前台。点自己的浮窗时，按点之前那个进程算。
 
     负句柄（整块显示器）没有对应进程，直接算前台 —— 全屏游戏时本来就该一直识别。
+    锁定时（window_choice.json 里 lock=true）也不看前台：虚拟机窗口在后台照样识别。
     """
     if not wid:
         return False
-    if wid < 0:
+    if wid < 0 or locked():
         return True
     w = _info_of(wid)
     if w is None:
