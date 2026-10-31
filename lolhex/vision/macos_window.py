@@ -157,8 +157,30 @@ def scale_for_rect(rect: Rect) -> float:
 
 # ---------------------------------------------------------------- 矩形
 
+# 窗口标题栏高度（点）。macOS 没有查询「内容区」的公开 API（AX 那条路要辅助功能权限），
+# 所以按 owner 查表；铺满整块屏的窗口按 0 处理。值不对会让上游的默认标题框整体偏移。
+TITLEBAR = {
+    "Parallels Desktop": 38,   # 实测：1799x1050 的 VM 窗口，内容区从 y=38 开始
+    "VMware Fusion": 28,
+    "UTM": 28,
+}
+TITLEBAR_DEFAULT = 28
+
+
+def _titlebar_height(info: dict) -> int:
+    """窗口标题栏高度（点）。窗口铺满某块屏时视为无标题栏。"""
+    err, displays, _ = Quartz.CGGetActiveDisplayList(16, None, None)
+    if not err and displays:
+        for d in displays:
+            r = Quartz.CGDisplayBounds(d)
+            if (abs(info["x"] - r.origin.x) <= 1 and abs(info["y"] - r.origin.y) <= 1
+                    and abs(info["w"] - r.size.width) <= 1 and abs(info["h"] - r.size.height) <= 1):
+                return 0
+    return TITLEBAR.get(info["owner"], TITLEBAR_DEFAULT)
+
+
 def window_rect(wid: int) -> Rect | None:
-    """窗口在屏幕上的物理像素矩形（含边框）。"""
+    """窗口在屏幕上的物理像素矩形（含标题栏）。"""
     w = _info_of(wid)
     if w is None:
         return None
@@ -167,12 +189,19 @@ def window_rect(wid: int) -> Rect | None:
 
 
 def client_rect(wid: int) -> Rect | None:
-    """窗口内容区在屏幕上的物理像素矩形。
+    """窗口内容区在屏幕上的物理像素矩形（不含标题栏）。
 
-    shortcut: 直接用窗口矩形，不减标题栏——游戏全屏/无边框时两者相同；
-    窗口化带标题栏时区域会往上多出标题栏高度，靠上游的校准流程兜住。
+    上游的默认标题框是按「游戏铺满客户区」定的，Windows 的 GetClientRect 天然不含标题栏。
+    macOS 的 CGWindowBounds 含标题栏，不减掉会让默认位置整体下移一个标题栏高度，
+    读到的是卡片图标而不是标题 —— 表现为「认出一堆不相干的海克斯名」。
     """
-    return window_rect(wid)
+    w = _info_of(wid)
+    if w is None:
+        return None
+    s = scale_at(w["x"] + w["w"] // 2, w["y"] + w["h"] // 2)
+    tb = _titlebar_height(w)
+    return Rect(int(w["x"] * s), int((w["y"] + tb) * s),
+                int(w["w"] * s), int((w["h"] - tb) * s))
 
 
 def set_window_rect(wid: int, r: Rect) -> None:
