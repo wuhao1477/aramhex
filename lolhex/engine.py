@@ -395,6 +395,11 @@ class Engine:
             self._set(champ_select=None)
 
         if phase == "ingame":
+            from .vision import capture
+            if capture.IS_MACOS and game:
+                # macOS：虚拟机窗口既是游戏窗口，也是选英雄时的客户端（找不到单独的客户端窗口），
+                # 选英雄界面只能从这里认；不在选人界面时扫描会直接判定为否，不做别的事
+                self._champ_select_scan(game)
             return 2.0
         if phase == "client" and win.is_foreground(client):
             self._champ_select_scan(client)
@@ -406,6 +411,8 @@ class Engine:
 
     def _set_hero_auto(self, hid: str, source: str) -> None:
         if self.state["hero_id"] != hid:
+            name = (self.store.heroes.get(hid) or {}).get("name") or hid
+            log.info("选英雄：自动识别我方英雄 %s（%s，%s）", name, hid, source)
             self._set(hero_id=hid, hero_source=source)
             threading.Thread(target=self._prefetch_hero, args=(hid,), daemon=True).start()
             self._reevaluate()
@@ -483,18 +490,6 @@ class Engine:
             # 客户端窗口化、没铺满截图时（虚拟机里常见），头像的位置按截图比例换算会偏，全靠头像就认不出英雄
             self._champ_select_ocr(img)
 
-    @staticmethod
-    def _marker_in_strip(img, ocr, texts) -> bool:
-        """截图顶部 30% 里有没有"可用"之类的标记字（不管它在哪个位置）。"""
-        from .vision.matcher import normalize as _norm
-        strip = img[: max(1, int(img.shape[0] * 0.3))]
-        keys = [_norm(t) for t in texts if _norm(t)]
-        for ln in ocr.detect(strip):
-            got = _norm(ln.text or "")
-            if got and any(k == got or (len(k) >= 2 and k in got) for k in keys):
-                return True
-        return False
-
     def analyze_champ_select(self, img, origin: tuple[int, int] = (0, 0)):
         """客户端截图 → 标注数据 {"bench", "team", "mine", "cards"?}；
         不在选英雄界面返回 False，在界面但什么都没认出返回 None。"""
@@ -509,10 +504,6 @@ class Engine:
         bench_texts = i18n.ui_texts("bench", lang)
         in_cs = self._try_texts(bench_texts,
                                 lambda t: champselect.is_champ_select(img, ocr.recognize, memo, t))
-        if not in_cs and self._cs_tick % 3 == 1:
-            # 固定位置的"可用"标记按截图比例算，客户端没铺满截图（虚拟机里常见）时框会落空。
-            # 退一步：在截图顶部整屏找一遍"可用"（每 3 次扫描才做一次，大厅等界面不多花时间）
-            in_cs = self._marker_in_strip(img, ocr, bench_texts)
         # 开局选卡时顶部预选栏被盖住、没有"可用"两个字，所以卡片按"选择你的英雄"单独判断，
         # 否则要等点完卡、回到正常选人界面才有标注
         cards = self._try_texts(i18n.ui_texts("pick", lang), lambda t: champselect.read_cards(
