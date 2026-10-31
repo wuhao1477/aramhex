@@ -10,6 +10,7 @@ from binary_provenance import check_binary_sources
 
 datas = collect_data_files("rapidocr")  # OCR 模型（.onnx）与配置（.yaml）
 datas += [("../lolhex/ui/icon.png", "lolhex/ui")]
+datas += [("../lolhex/data/client_logo.png", "lolhex/data")]  # 虚拟机里找 LoL 客户端的徽标模板（clientfind）；漏带时 macOS 版找不到客户端、选英雄认不出
 datas += [("../lolhex/data/hero_aliases.json", "lolhex/data")]  # 英雄别名（来源 Hexdata）
 datas += [("../lolhex/data/bundled", "lolhex/data/bundled")]  # 内置统计数据（scripts/update_data.py）
 datas += [("../lolhex/data/hero_nicknames.json", "lolhex/data")]  # 英雄外号（网上常见叫法）
@@ -28,13 +29,15 @@ a = Analysis(
     pathex=[".."],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["lolhex.ui.overlay", "lolhex.vision.detector", "lolhex.vision.capture", "lolhex.vision.ocr",
+    hiddenimports=["lolhex.__main__", "lolhex.ui.overlay", "lolhex.vision.detector", "lolhex.vision.capture", "lolhex.vision.ocr",
                    "lolhex.ui.mainwindow", "lolhex.ui.autostart",
                    "PySide6.QtNetwork"],
     excludes=["tkinter", "matplotlib", "IPython", "pytest"],
     noarchive=False,
 )
-check_binary_sources(a.binaries, [sys.prefix, sys.base_prefix, os.environ["SystemRoot"], Path(SPEC).parent.parent])
+# ponytail: macOS 的 Homebrew 动态库（libxcb、libmpdec）会被收进来，本机自用先不校验；要对外发再加 macOS 的允许目录
+if sys.platform != "darwin":
+    check_binary_sources(a.binaries, [sys.prefix, sys.base_prefix, os.environ["SystemRoot"], Path(SPEC).parent.parent])
 
 # 精简：去掉用不到的大文件（压缩后共约 20MB）。打包后的自检会跑一遍 OpenCV 和文字识别，确认没删到要用的。
 # - opencv_videoio_ffmpeg：视频解码，我们只处理截图
@@ -62,3 +65,20 @@ exe = EXE(
     version=None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="AramHex")
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="AramHex.app",
+        bundle_identifier="com.aramhex.app",
+        info_plist={
+            "CFBundleName": "AramHex",
+            "CFBundleDisplayName": "海克斯大乱斗助手",
+            "CFBundleShortVersionString": "1.1.4",
+            "CFBundleVersion": "1.1.4",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "11.0",
+            # 截屏识别需要「屏幕录制」权限，系统弹窗会显示这段说明
+            "NSScreenCaptureUsageDescription": "海克斯大乱斗助手需要读取游戏窗口画面来识别三选一和选人界面。",
+        },
+    )
+

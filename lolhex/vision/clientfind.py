@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 # 模板是从 1280 像素宽的客户端里截的徽标：模板里 (22, 8) 是客户端内的左上角
 TEMPLATE = Path(__file__).resolve().parent.parent / "data" / "client_logo.png"
@@ -22,12 +25,16 @@ TEMPLATE_CLIENT_H = 720
 MIN_SCORE = 0.9
 
 _tpl = None
+_tpl_missing = False
 
 
 def _template():
-    global _tpl
-    if _tpl is None:
+    global _tpl, _tpl_missing
+    if _tpl is None and not _tpl_missing:
         _tpl = cv2.imread(str(TEMPLATE))
+        if _tpl is None:  # 打包时漏带会一直静默找不到客户端，所以留一行日志（只提示一次）
+            _tpl_missing = True
+            log.warning("缺少客户端徽标模板 %s，虚拟机里找不到 LoL 客户端", TEMPLATE)
     return _tpl
 
 
@@ -36,22 +43,26 @@ def find_client(img: np.ndarray) -> tuple[int, int, int, int] | None:
     tpl = _template()
     if tpl is None or img is None or img.size == 0:
         return None
+    # 先缩到 1280 宽再找：Retina 上整块虚拟机画面是 2 倍像素，徽标会超出下面的缩放范围，全尺寸匹配也慢
+    f = min(1.0, 1280 / img.shape[1])
+    small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA) if f < 1 else img
     best_score, best_scale, best_loc = -1.0, 1.0, (0, 0)
-    for s in np.arange(0.5, 1.6, 0.02):
+    for s in np.arange(0.4, 1.6, 0.02):
         t = cv2.resize(tpl, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
-        if t.shape[0] > img.shape[0] or t.shape[1] > img.shape[1]:
+        if t.shape[0] > small.shape[0] or t.shape[1] > small.shape[1]:
             continue
-        score = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
+        score = cv2.matchTemplate(small, t, cv2.TM_CCOEFF_NORMED)
         _, mx, _, loc = cv2.minMaxLoc(score)
         if mx > best_score:
             best_score, best_scale, best_loc = mx, float(s), loc
     if best_score < MIN_SCORE:
         return None
     ox, oy = TEMPLATE_ORIGIN
-    x = round(best_loc[0] - ox * best_scale)
-    y = round(best_loc[1] - oy * best_scale)
-    w = round(TEMPLATE_CLIENT_W * best_scale)
-    h = round(TEMPLATE_CLIENT_H * best_scale)
+    # 换算回原截图的像素
+    x = round((best_loc[0] - ox * best_scale) / f)
+    y = round((best_loc[1] - oy * best_scale) / f)
+    w = round(TEMPLATE_CLIENT_W * best_scale / f)
+    h = round(TEMPLATE_CLIENT_H * best_scale / f)
     # 客户端不会越出截图
     x, y = max(0, x), max(0, y)
     w, h = min(w, img.shape[1] - x), min(h, img.shape[0] - y)

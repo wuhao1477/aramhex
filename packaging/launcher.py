@@ -34,10 +34,19 @@ def _crash(text: str) -> None:
     if path:
         msg += f"\n\n错误记录：{path}"
     try:
-        import ctypes
-        if ctypes.windll.user32.MessageBoxW(None, msg, "海克斯大乱斗助手", 0x4 | 0x10) == 6:  # 是/否 + 错误图标；6 = 是
-            import webbrowser
-            webbrowser.open(DOWNLOAD_PAGE)
+        if sys.platform == "win32":
+            import ctypes
+            if ctypes.windll.user32.MessageBoxW(None, msg, "海克斯大乱斗助手", 0x4 | 0x10) == 6:  # 是/否 + 错误图标；6 = 是
+                import webbrowser
+                webbrowser.open(DOWNLOAD_PAGE)
+        else:  # macOS：用系统对话框；没有原生对话框时只写日志
+            import subprocess
+            text = msg.replace("\\", "\\\\").replace('"', '\\"').replace("\n", '" & return & "')
+            script = f'display dialog "{text}" with title "海克斯大乱斗助手" buttons {{"取消", "打开下载页"}} default button "打开下载页" with icon caution'
+            out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            if "打开下载页" in out.stdout:
+                import webbrowser
+                webbrowser.open(DOWNLOAD_PAGE)
     except Exception:
         pass
 

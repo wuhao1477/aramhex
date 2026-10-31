@@ -19,6 +19,14 @@ IS_MACOS = sys.platform == "darwin"
 _local = threading.local()
 
 
+def screen_access() -> bool:
+    """macOS 有没有屏幕录制权限。没有时截屏不报错，只拿到桌面壁纸，表现为认不出英雄和海克斯。"""
+    if not IS_MACOS:
+        return True
+    import Quartz
+    return bool(Quartz.CGPreflightScreenCaptureAccess())
+
+
 def _mss():
     inst = getattr(_local, "mss", None)
     if inst is None:

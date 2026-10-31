@@ -148,6 +148,9 @@ class Engine:
     # ---------- 生命周期 ----------
 
     def start(self) -> None:
+        from .vision import capture
+        if not capture.screen_access():
+            log.warning("没有屏幕录制权限：截屏只会拿到桌面，认不出英雄和海克斯。请到 系统设置 → 隐私与安全性 → 屏幕录制 勾选 AramHex，然后重新打开")
         for name, fn in (("data", self._data_loop), ("observer", self._observer_loop),
                          ("vision", self._vision_loop)):
             threading.Thread(target=fn, name=name, daemon=True).start()
