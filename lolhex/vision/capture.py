@@ -49,7 +49,11 @@ def _grab_macos(rect: Rect) -> np.ndarray:
     s = scale_for_rect(rect) or 1.0
     x, y = round(rect.left / s), round(rect.top / s)
     w, h = max(1, round(rect.width / s)), max(1, round(rect.height / s))
-    pix = QGuiApplication.primaryScreen().grabWindow(0, x, y, w, h)
+    screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        # 没有 QGuiApplication 就没有屏幕可抓（正常跑应用时一定有；工具脚本要自己建）
+        return np.zeros((rect.height, rect.width, 3), np.uint8)
+    pix = screen.grabWindow(0, x, y, w, h)
     if pix.isNull():  # 坐标落到虚拟桌面之外
         return np.zeros((rect.height, rect.width, 3), np.uint8)
     img = pix.toImage().convertToFormat(QImage.Format.Format_RGB32)

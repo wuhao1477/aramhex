@@ -70,8 +70,54 @@ def _match(owner_sub: str, title_sub: str) -> int:
     return max(hits, key=lambda w: w["w"] * w["h"])["id"]
 
 
+# 手动指定的游戏窗口（tools/pick_window.py 写入）。机器上可能开着多个虚拟机，
+# 按面积猜会猜错，所以选一次就固定下来；窗口不在了再退回自动。
+#
+# 也可以直接指定「整块显示器」——全屏游戏时这比按窗口抓更省事，也不受标题栏影响。
+# 显示器用负数句柄表示：-1 = 第 0 块屏，-2 = 第 1 块屏，以此类推。
+_choice_cache: tuple[float, int] | None = None
+
+
+def _chosen_window() -> int:
+    """读手动选择。窗口按 owner + 位置最接近匹配；显示器直接返回负句柄。"""
+    global _choice_cache
+    now = time.monotonic()
+    if _choice_cache and now - _choice_cache[0] < 2.0:
+        return _choice_cache[1]
+
+    from ..config import app_home
+    path = app_home() / "window_choice.json"
+    try:
+        import json
+        want = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        return 0
+
+    if want.get("kind") == "display":
+        idx = int(want.get("display", 0))
+        err, displays, _ = Quartz.CGGetActiveDisplayList(16, None, None)
+        if not err and 0 <= idx < len(displays):
+            _choice_cache = (now, -(idx + 1))
+            return -(idx + 1)
+        return 0
+
+    best, best_d = 0, None
+    for w in _window_info():
+        if w["owner"] != want.get("owner"):
+            continue
+        d = (abs(w["x"] - want.get("x", 0)) + abs(w["y"] - want.get("y", 0))
+             + abs(w["w"] - want.get("w", 0)) + abs(w["h"] - want.get("h", 0)))
+        if best_d is None or d < best_d:
+            best, best_d = w["id"], d
+    _choice_cache = (now, best)
+    return best
+
+
 def find_game_window() -> int:
-    """游戏窗口：先找原生客户端，再找虚拟机窗口（Parallels 窗口标题为空，按 owner）。"""
+    """游戏窗口：优先用手动指定的；否则按标题找客户端，再按 owner 找虚拟机窗口。"""
+    wid = _chosen_window()
+    if wid:
+        return wid
     for t in GAME_TITLES:
         wid = _match("", t)
         if wid:
@@ -180,7 +226,9 @@ def _titlebar_height(info: dict) -> int:
 
 
 def window_rect(wid: int) -> Rect | None:
-    """窗口在屏幕上的物理像素矩形（含标题栏）。"""
+    """窗口在屏幕上的物理像素矩形（含标题栏）。负句柄表示整块显示器。"""
+    if wid < 0:
+        return _display_rect(-wid - 1)
     w = _info_of(wid)
     if w is None:
         return None
@@ -194,7 +242,11 @@ def client_rect(wid: int) -> Rect | None:
     上游的默认标题框是按「游戏铺满客户区」定的，Windows 的 GetClientRect 天然不含标题栏。
     macOS 的 CGWindowBounds 含标题栏，不减掉会让默认位置整体下移一个标题栏高度，
     读到的是卡片图标而不是标题 —— 表现为「认出一堆不相干的海克斯名」。
+
+    负句柄表示「整块显示器」（见 _chosen_window），直接返回该屏的物理像素范围。
     """
+    if wid < 0:
+        return _display_rect(-wid - 1)
     w = _info_of(wid)
     if w is None:
         return None
@@ -202,6 +254,18 @@ def client_rect(wid: int) -> Rect | None:
     tb = _titlebar_height(w)
     return Rect(int(w["x"] * s), int((w["y"] + tb) * s),
                 int(w["w"] * s), int((w["h"] - tb) * s))
+
+
+def _display_rect(idx: int) -> Rect | None:
+    """第 idx 块显示器的物理像素范围。全屏游戏直接抓整屏时用。"""
+    err, displays, _ = Quartz.CGGetActiveDisplayList(16, None, None)
+    if err or not displays or not 0 <= idx < len(displays):
+        return None
+    d = displays[idx]
+    r = Quartz.CGDisplayBounds(d)
+    s = _display_scale(d)
+    return Rect(int(r.origin.x * s), int(r.origin.y * s),
+                int(r.size.width * s), int(r.size.height * s))
 
 
 def set_window_rect(wid: int, r: Rect) -> None:
@@ -230,9 +294,14 @@ def watch_foreground() -> None:
 
 
 def is_foreground(wid: int) -> bool:
-    """窗口所属进程是否在前台。点自己的浮窗时，按点之前那个进程算。"""
+    """窗口所属进程是否在前台。点自己的浮窗时，按点之前那个进程算。
+
+    负句柄（整块显示器）没有对应进程，直接算前台 —— 全屏游戏时本来就该一直识别。
+    """
     if not wid:
         return False
+    if wid < 0:
+        return True
     w = _info_of(wid)
     if w is None:
         return False
