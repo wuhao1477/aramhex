@@ -455,8 +455,22 @@ class Engine:
         if cs and cs.get("mine"):
             self._set_hero_auto(cs["mine"], "ocr")
             self._set(hero_candidates=[])
-        elif not cs and self._icon_bank is None and img is not None:
-            self._champ_select_ocr(img)  # 头像库还没下载好时，退回整屏文字识别
+        elif (not cs or not cs.get("mine")) and img is not None:
+            # 头像库没下载好，或者头像比对认不出自己：退回整屏文字识别（名字印在屏幕上，不依赖界面布局）。
+            # 客户端窗口化、没铺满截图时（虚拟机里常见），头像的位置按截图比例换算会偏，全靠头像就认不出英雄
+            self._champ_select_ocr(img)
+
+    @staticmethod
+    def _marker_in_strip(img, ocr, texts) -> bool:
+        """截图顶部 30% 里有没有"可用"之类的标记字（不管它在哪个位置）。"""
+        from .vision.matcher import normalize as _norm
+        strip = img[: max(1, int(img.shape[0] * 0.3))]
+        keys = [_norm(t) for t in texts if _norm(t)]
+        for ln in ocr.detect(strip):
+            got = _norm(ln.text or "")
+            if got and any(k == got or (len(k) >= 2 and k in got) for k in keys):
+                return True
+        return False
 
     def analyze_champ_select(self, img, origin: tuple[int, int] = (0, 0)):
         """客户端截图 → 标注数据 {"bench", "team", "mine", "cards"?}；
@@ -469,8 +483,13 @@ class Engine:
         memo = self._cs_memo
         lang = self.settings.game_lang
         self._cs_tick = getattr(self, "_cs_tick", 0) + 1
-        in_cs = self._try_texts(i18n.ui_texts("bench", lang),
+        bench_texts = i18n.ui_texts("bench", lang)
+        in_cs = self._try_texts(bench_texts,
                                 lambda t: champselect.is_champ_select(img, ocr.recognize, memo, t))
+        if not in_cs and self._cs_tick % 3 == 1:
+            # 固定位置的"可用"标记按截图比例算，客户端没铺满截图（虚拟机里常见）时框会落空。
+            # 退一步：在截图顶部整屏找一遍"可用"（每 3 次扫描才做一次，大厅等界面不多花时间）
+            in_cs = self._marker_in_strip(img, ocr, bench_texts)
         # 开局选卡时顶部预选栏被盖住、没有"可用"两个字，所以卡片按"选择你的英雄"单独判断，
         # 否则要等点完卡、回到正常选人界面才有标注
         cards = self._try_texts(i18n.ui_texts("pick", lang), lambda t: champselect.read_cards(
