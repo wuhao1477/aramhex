@@ -116,6 +116,17 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def _clear_drawn_overlays():
+    """浮窗登记表是进程级全局的：前面的 GUI 测试留下的矩形会被后面的识别测试当成「屏幕上的浮窗」。每个测试前后清空。"""
+    from lolhex.vision import window
+    with window._drawn_lock:
+        window._drawn.clear()
+    yield
+    with window._drawn_lock:
+        window._drawn.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(monkeypatch, tmp_path):
     """每个测试用自己的临时数据目录和空的云控缓存，不读开发机上真的 cloud.json / config.json。
     要固定目录的用例自己再 setenv 覆盖。"""
