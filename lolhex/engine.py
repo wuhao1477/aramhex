@@ -485,9 +485,11 @@ class Engine:
         if cs and cs.get("mine"):
             self._set_hero_auto(cs["mine"], "ocr")
             self._set(hero_candidates=[])
-        elif (not cs or not cs.get("mine")) and img is not None:
+        elif (not cs or not cs.get("mine")) and img is not None and not self.state["hero_id"] \
+                and now >= getattr(self, "_cs_ocr_next", 0.0):
             # 头像库没下载好，或者头像比对认不出自己：退回整屏文字识别（名字印在屏幕上，不依赖界面布局）。
-            # 客户端窗口化、没铺满截图时（虚拟机里常见），头像的位置按截图比例换算会偏，全靠头像就认不出英雄
+            # 整屏 OCR 很慢（实测中位数约 13 秒/次扫描），所以英雄认出来以后不再做，没认出来时最多每 3 秒做一次
+            self._cs_ocr_next = now + 3.0
             self._champ_select_ocr(img)
 
     def analyze_champ_select(self, img, origin: tuple[int, int] = (0, 0)):
