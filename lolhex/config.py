@@ -41,6 +41,26 @@ def is_portable() -> bool:
     return (program_dir() / "portable.txt").is_file()
 
 
+def load_env_file() -> None:
+    """读程序目录下的 .env（每行 KEY=VALUE，# 开头是注释）。已有的系统环境变量优先，不覆盖。给第三方 AI 等可选功能用的密钥放这里。"""
+    path = program_dir() / ".env"
+    if not path.is_file():
+        return
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:  # 老记事本存成 ANSI（GBK）
+        text = raw.decode("gbk", errors="replace")
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or key.startswith("#"):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
 def app_home() -> Path:
     env = os.environ.get("ARAMHEX_HOME")
     if env:

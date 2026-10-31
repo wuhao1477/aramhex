@@ -16,7 +16,7 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 
-from .config import Settings, app_home, program_dir
+from .config import Settings, app_home, load_env_file, program_dir
 
 
 def _fix_stdio() -> None:
@@ -89,6 +89,7 @@ def main(argv=None) -> int:
         return run(args.self_test_gui)
 
     _fix_stdio()
+    load_env_file()  # 先读 .env，后面的设置和可选功能（第三方 AI）都会用到
     from . import BETA, __version__, cloud
     # 调试模式：命令行 --debug、测试版，或者程序文件夹 / 数据文件夹里放一个 debug.txt（正式版同一个程序，
     # 方便复现问题时打开；删掉文件就恢复）。调试模式写详细日志，三选一和选英雄时自动截图

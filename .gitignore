@@ -8,5 +8,8 @@ dist/
 lolhex/data/bundled.new/
 lolhex/_build.py
 
+# 本机密钥（第三方 AI 的 baseUrl / key / model），见 .env.example
+.env
+
 # 运行期 sqlite 临时文件（app_home 用 :memory: 时会落到 cwd）
 :memory:.ses
