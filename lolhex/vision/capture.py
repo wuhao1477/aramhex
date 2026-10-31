@@ -1,16 +1,20 @@
 """屏幕截取：只截需要的矩形区域，返回 BGR numpy 数组。
 
-使用 mss（GDI BitBlt）：无边框/窗口化下可用；独占全屏可能截到黑屏，界面会提示改无边框。
+Windows/Linux 用 mss（GDI BitBlt）：无边框/窗口化下可用；独占全屏可能截到黑屏，界面会提示改无边框。
+macOS 用 Qt 的 QScreen.grabWindow：mss 在 Retina 上只给 1x 像素，识别小字号中文会掉命中率。
 """
 
 from __future__ import annotations
 
+import sys
 import threading
 
 import numpy as np
 
 from . import window
 from .window import Rect
+
+IS_MACOS = sys.platform == "darwin"
 
 _local = threading.local()
 
@@ -32,12 +36,42 @@ def release() -> None:
         inst.close()
 
 
+def _grab_macos(rect: Rect) -> np.ndarray:
+    """rect 是物理像素；Qt 收点坐标、返回的仍是物理像素，两边单位对得上。
+
+    实测（macOS 26.7 / 多屏混合 DPR）：CGWindowBounds 与 QScreen.geometry 同一套坐标，
+    直接传即可，无需 y 轴翻转；抓 800x600 点约 2.9 ms。
+    """
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    from .macos_window import scale_for_rect
+
+    s = scale_for_rect(rect) or 1.0
+    x, y = round(rect.left / s), round(rect.top / s)
+    w, h = max(1, round(rect.width / s)), max(1, round(rect.height / s))
+    screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        # 没有 QGuiApplication 就没有屏幕可抓（正常跑应用时一定有；工具脚本要自己建）
+        return np.zeros((rect.height, rect.width, 3), np.uint8)
+    pix = screen.grabWindow(0, x, y, w, h)
+    if pix.isNull():  # 坐标落到虚拟桌面之外
+        return np.zeros((rect.height, rect.width, 3), np.uint8)
+    img = pix.toImage().convertToFormat(QImage.Format.Format_RGB32)
+    arr = np.frombuffer(img.constBits(), np.uint8).reshape(
+        img.height(), img.bytesPerLine() // 4, 4)
+    return np.ascontiguousarray(arr[:, :img.width(), :3])  # BGRA -> BGR
+
+
 def grab(rect: Rect, mask: bool = True) -> np.ndarray:
     """截 rect 这块屏幕。mask=True（识别用）时把本程序浮窗画着的地方涂黑，不认自己画的字；
     自动截图要看浮窗摆得对不对，用 mask=False。"""
-    shot = _mss().grab({"left": rect.left, "top": rect.top, "width": rect.width, "height": rect.height})
-    arr = np.asarray(shot)  # BGRA
-    img = np.ascontiguousarray(arr[:, :, :3])
+    if IS_MACOS:
+        img = _grab_macos(rect)
+    else:
+        shot = _mss().grab({"left": rect.left, "top": rect.top,
+                            "width": rect.width, "height": rect.height})
+        arr = np.asarray(shot)  # BGRA
+        img = np.ascontiguousarray(arr[:, :, :3])
     if mask:
         mask_drawn(img, rect, window.drawn_rects())
     return img

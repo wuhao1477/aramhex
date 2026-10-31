@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, 
                                QPushButton, QSizePolicy, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import DATA_HOMEPAGE, HOMEPAGE, __version__, cloud, cloudsettings, i18n, logupload, patch, rank, recommend, update
-from ..config import SPEEDS, is_portable
+from ..config import SPEEDS, app_home, is_portable
 from ..vision import window as win
 from ..data.public import BANDS, norm_band
 from . import autostart
@@ -422,6 +422,13 @@ class MainWindow(QMainWindow):
         self.set_usage.setToolTip("开着时：联网时带一个随机编号（和账号、硬件无关），用来统计有多少人在用；\n"
                                   "排查问题时开发者可能请这台电脑上传运行日志，上传前去掉游戏账号名和电脑用户名。\n"
                                   "关掉就都不发。")
+        # 调试模式：详细日志 + 自动截图；也是本机测试脚本（tools/ 里的保活、自动选卡）的开关。
+        # 开关状态不写进 config.json，而是对应数据目录里的 debug.txt —— 和命令行 --debug、测试版同一套机制
+        self.set_debug = QCheckBox("调试模式（详细日志 + 自动截图）")
+        self.set_debug.setChecked(bool(getattr(s, "debug_mode", False)))
+        self.set_debug.setToolTip("给排查问题用的：记详细日志、把识别画面截图留档。\n"
+                                  "另外，本机测试用的「自定义对局保活 / 自动选卡」脚本只有开着它才能启动。\n"
+                                  f"打开后会在数据目录建一个 debug.txt（{app_home() / 'debug.txt'}）。")
         # 外服：游戏客户端的语言
         self.set_lang = QComboBox()
         for code, label in i18n.LANGS:
@@ -441,6 +448,7 @@ class MainWindow(QMainWindow):
         badge_left.addWidget(self.set_auto)
         badge_left.addWidget(self.set_data)
         badge_left.addWidget(self.set_usage)
+        badge_left.addWidget(self.set_debug)
         save = QPushButton("保存设置")
         save.clicked.connect(self._save_settings)
         badge_left.addStretch(1)
@@ -769,11 +777,33 @@ class MainWindow(QMainWindow):
                 else:
                     self._offer_manual("", update.pan_links())
 
+    def _apply_debug_mode(self, on: bool) -> None:
+        """开关调试模式：改运行中的标志，并在数据目录建/删 debug.txt（下次启动照旧生效）。
+
+        为什么用文件而不是设置项：debug_mode 是运行期标志，__main__ 按 --debug / 测试版 /
+        debug.txt 决定，本来就不写进 config.json（见 config.Settings.__post_init__）。
+        写文件能让「界面开关」和「命令行 --debug」「测试版」共用同一套判断。
+        """
+        s = self.engine.settings
+        s.debug_mode = bool(on)
+        marker = app_home() / "debug.txt"
+        try:
+            if on:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                if not marker.exists():
+                    marker.write_text("界面里打开的调试模式（详细日志 + 自动截图）。"
+                                      "删掉这个文件就等于关掉。\n", encoding="utf-8")
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError as e:
+            QMessageBox.warning(self, "调试模式", f"写 {marker} 失败：{e}")
+
     def _save_settings(self):
         s = self.engine.settings
         before = {k: getattr(s, k) for k in cloudsettings.SPEC}
         s.check_data_updates = self.set_data.isChecked()
         s.send_usage = self.set_usage.isChecked()
+        self._apply_debug_mode(self.set_debug.isChecked())
         cloud.set_install_id(s.install_id if s.send_usage else None)
         try:
             logupload.apply_verbose(s, cloud.get())  # 关了「帮助改善软件」，远程详细日志马上停

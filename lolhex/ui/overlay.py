@@ -49,8 +49,24 @@ def _dpr() -> float:
     return s.devicePixelRatio() if s else 1.0
 
 
-def _logical(x: float) -> int:
-    return int(round(x / _dpr()))
+def _scale_at(rect) -> float:
+    """rect（物理像素）所在显示器的缩放倍数。
+
+    多屏可以是混合 DPR（内建 Retina 2.0 + 外接 1080p 1.0），
+    用主屏的 _dpr() 换算会把浮窗摆到错的地方。
+    """
+    cx, cy = rect.left + rect.width // 2, rect.top + rect.height // 2
+    for s in QGuiApplication.screens():
+        d = s.devicePixelRatio() or 1.0
+        g = s.geometry()
+        if (g.left() * d <= cx < (g.left() + g.width()) * d
+                and g.top() * d <= cy < (g.top() + g.height()) * d):
+            return d
+    return _dpr()
+
+
+def _logical(x: float, s: float) -> int:
+    return int(round(x / s))
 
 
 def _overflow(actual, rect) -> bool:
@@ -125,7 +141,9 @@ class _Layer(QWidget):
         return self.devicePixelRatioF() if win.IS_WINDOWS else _dpr()
 
     def _place_qt(self, rect) -> None:
-        geo = QRect(_logical(rect.left), _logical(rect.top), _logical(rect.width), _logical(rect.height))
+        s = _scale_at(rect)
+        geo = QRect(_logical(rect.left, s), _logical(rect.top, s),
+                    _logical(rect.width, s), _logical(rect.height, s))
         if self.geometry() != geo:
             self.setGeometry(geo)
         self.origin = QPoint(rect.left, rect.top)
@@ -856,11 +874,13 @@ class ControlPanel(QWidget):
                 return
         if badge:
             bw = self.btn.width()
-            self.move(_logical(badge[0]) + bw // 2 - self.width(), _logical(badge[1]) - bw // 2)
+            s = _scale_at(win.Rect(int(badge[0]), int(badge[1]), 1, 1))
+            self.move(_logical(badge[0], s) + bw // 2 - self.width(), _logical(badge[1], s) - bw // 2)
             self._place_body()
             return
         if rect is not None:
-            left, top, right = _logical(rect.left), _logical(rect.top), _logical(rect.right)
+            s = _scale_at(rect)
+            left, top, right = _logical(rect.left, s), _logical(rect.top, s), _logical(rect.right, s)
         else:
             g = QGuiApplication.primaryScreen().availableGeometry()
             left, top, right = g.left(), g.top(), g.right()

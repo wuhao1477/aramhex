@@ -8,5 +8,7 @@ opencv-python==5.0.0.93
 rapidocr==3.9.2
 onnxruntime==1.30.0
 PySide6-Essentials==6.11.2
+# 运行（macOS）：窗口枚举与多屏缩放查询。macOS 上 mss 只给 1x 像素，截屏走 Qt。
+pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
 # 测试
 pytest

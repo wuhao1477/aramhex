@@ -395,6 +395,11 @@ class Engine:
             self._set(champ_select=None)
 
         if phase == "ingame":
+            from .vision import capture
+            if capture.IS_MACOS and game:
+                # macOS：虚拟机窗口既是游戏窗口，也是选英雄时的客户端（找不到单独的客户端窗口），
+                # 选英雄界面只能从这里认；不在选人界面时扫描会直接判定为否，不做别的事
+                self._champ_select_scan(game)
             return 2.0
         if phase == "client" and win.is_foreground(client):
             self._champ_select_scan(client)
@@ -406,6 +411,8 @@ class Engine:
 
     def _set_hero_auto(self, hid: str, source: str) -> None:
         if self.state["hero_id"] != hid:
+            name = (self.store.heroes.get(hid) or {}).get("name") or hid
+            log.info("选英雄：自动识别我方英雄 %s（%s，%s）", name, hid, source)
             self._set(hero_id=hid, hero_source=source)
             threading.Thread(target=self._prefetch_hero, args=(hid,), daemon=True).start()
             self._reevaluate()
@@ -421,11 +428,34 @@ class Engine:
         if capture.is_blank(img):
             return
         t0 = time.monotonic()
-        cs = self.analyze_champ_select(img, (rect.left, rect.top))
+        img, origin = self._client_crop(img, (rect.left, rect.top))
+        cs = self.analyze_champ_select(img, origin)
         dt = time.monotonic() - t0
         if dt > 0.8:
             log.info("选英雄：这次识别用了 %.1f 秒", dt)
         self._apply_champ_select(cs, img)
+
+    def _client_crop(self, img, origin):
+        """macOS 虚拟机：截图里 LoL 客户端只占一块，先找到它的位置，之后只在客户端内部识别（版式按客户端换算）。
+        找到后按截图尺寸缓存；尺寸没变就直接用，找不到的话最多每 5 秒重试一次。Windows 上截图本身就是客户端，不处理。"""
+        from .vision import capture, clientfind
+        if not capture.IS_MACOS:
+            return img, origin
+        key = img.shape[:2]
+        cache = getattr(self, "_client_box", None)  # (截图尺寸, 矩形 或 None, 上次失败的时间)
+        if cache and cache[0] == key and cache[1] is not None:
+            box = cache[1]
+        else:
+            now = time.monotonic()
+            if cache and cache[0] == key and now - cache[2] < 5.0:
+                return img, origin
+            box = clientfind.find_client(img)
+            self._client_box = (key, box, now if box is None else 0.0)
+            if box is None:
+                return img, origin
+            log.info("虚拟机里找到 LoL 客户端：%s", box)
+        x, y, w, h = box
+        return img[y:y + h, x:x + w], (origin[0] + x, origin[1] + y)
 
     CS_NEW_AFTER = 8.0   # 扫描确认离开选英雄界面超过这么多秒再进来，算新的一把（中途偶尔一次没认出界面不算）
     CS_NEW_GAP = 90.0    # 这么久完全没看到选英雄界面（切到别的窗口、排队）再看到，也算新的一把：大乱斗选英雄不会这么长
@@ -455,8 +485,12 @@ class Engine:
         if cs and cs.get("mine"):
             self._set_hero_auto(cs["mine"], "ocr")
             self._set(hero_candidates=[])
-        elif not cs and self._icon_bank is None and img is not None:
-            self._champ_select_ocr(img)  # 头像库还没下载好时，退回整屏文字识别
+        elif (not cs or not cs.get("mine")) and img is not None and not self.state["hero_id"] \
+                and now >= getattr(self, "_cs_ocr_next", 0.0):
+            # 头像库没下载好，或者头像比对认不出自己：退回整屏文字识别（名字印在屏幕上，不依赖界面布局）。
+            # 整屏 OCR 很慢（实测中位数约 13 秒/次扫描），所以英雄认出来以后不再做，没认出来时最多每 3 秒做一次
+            self._cs_ocr_next = now + 3.0
+            self._champ_select_ocr(img)
 
     def analyze_champ_select(self, img, origin: tuple[int, int] = (0, 0)):
         """客户端截图 → 标注数据 {"bench", "team", "mine", "cards"?}；
@@ -469,7 +503,8 @@ class Engine:
         memo = self._cs_memo
         lang = self.settings.game_lang
         self._cs_tick = getattr(self, "_cs_tick", 0) + 1
-        in_cs = self._try_texts(i18n.ui_texts("bench", lang),
+        bench_texts = i18n.ui_texts("bench", lang)
+        in_cs = self._try_texts(bench_texts,
                                 lambda t: champselect.is_champ_select(img, ocr.recognize, memo, t))
         # 开局选卡时顶部预选栏被盖住、没有"可用"两个字，所以卡片按"选择你的英雄"单独判断，
         # 否则要等点完卡、回到正常选人界面才有标注

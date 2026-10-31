@@ -144,6 +144,9 @@ def test_screenshot_thread_closes_its_capture_instance(tmp_path, monkeypatch):
         def close(self):
             self.closed = True
     monkeypatch.setattr(mss, "MSS", FakeMSS)
+    # 本用例测的是 mss 那条路；macOS 上截屏走 Qt，这里强制走 mss 分支
+    from lolhex.vision import capture
+    monkeypatch.setattr(capture, "IS_MACOS", False)
     monkeypatch.setenv("ARAMHEX_HOME", str(tmp_path))
     monkeypatch.setattr(autoshot.QTimer, "singleShot", lambda ms, fn: fn())
     shot = autoshot.AutoShot(SimpleNamespace(settings=SimpleNamespace(debug_mode=True)))

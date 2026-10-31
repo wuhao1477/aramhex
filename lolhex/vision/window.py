@@ -17,6 +17,12 @@ CLIENT_CLASS = "RCLIENT"
 IS_WINDOWS = sys.platform == "win32"
 
 
+def _mac():
+    """macOS 实现（延迟导入：既避开循环依赖，也让测试能照常 patch 本模块的符号）。"""
+    from . import macos_window
+    return macos_window
+
+
 @dataclass(frozen=True)
 class Rect:
     left: int
@@ -35,7 +41,7 @@ class Rect:
 
 def enable_dpi_awareness() -> None:
     if not IS_WINDOWS:
-        return
+        return _mac().enable_dpi_awareness()
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor
     except Exception:
@@ -52,15 +58,21 @@ def _find(cls: str | None, title: str | None) -> int:
 
 
 def find_game_window() -> int:
+    if not IS_WINDOWS:
+        return _mac().find_game_window()
     return _find(GAME_CLASS, None) or _find(None, GAME_TITLE)
 
 
 def find_client_window() -> int:
+    if not IS_WINDOWS:
+        return _mac().find_client_window()
     return _find(CLIENT_CLASS, None)
 
 
 def client_rect(hwnd: int) -> Rect | None:
-    if not IS_WINDOWS or not hwnd:
+    if not IS_WINDOWS:
+        return _mac().client_rect(hwnd)
+    if not hwnd:
         return None
     u = ctypes.windll.user32
     if u.IsIconic(hwnd) or not u.IsWindowVisible(hwnd):
@@ -78,7 +90,9 @@ def client_rect(hwnd: int) -> Rect | None:
 
 def window_rect(hwnd: int) -> Rect | None:
     """窗口在屏幕上的物理像素位置（含边框；无边框的悬浮层就是它画画的区域）。"""
-    if not IS_WINDOWS or not hwnd:
+    if not IS_WINDOWS:
+        return _mac().window_rect(hwnd)
+    if not hwnd:
         return None
     rc = wintypes.RECT()
     if not ctypes.windll.user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rc)):
@@ -88,7 +102,9 @@ def window_rect(hwnd: int) -> Rect | None:
 
 def set_window_rect(hwnd: int, r: Rect) -> None:
     """按物理像素摆放窗口（和截图同一套坐标），不改前后顺序、不抢焦点。"""
-    if IS_WINDOWS and hwnd:
+    if not IS_WINDOWS:
+        return _mac().set_window_rect(hwnd, r)
+    if hwnd:
         # 0x0004 SWP_NOZORDER | 0x0010 SWP_NOACTIVATE | 0x0200 SWP_NOOWNERZORDER
         ctypes.windll.user32.SetWindowPos(wintypes.HWND(hwnd), None, r.left, r.top, r.width, r.height, 0x0214)
 
@@ -96,7 +112,7 @@ def set_window_rect(hwnd: int, r: Rect) -> None:
 def dpi_info(hwnd: int = 0) -> str:
     """诊断用：窗口的 DPI 和它按哪种方式处理缩放；hwnd=0 时是本进程。拿不到返回空串。"""
     if not IS_WINDOWS:
-        return ""
+        return _mac().dpi_info(hwnd)
     u = ctypes.windll.user32
     try:
         u.GetAwarenessFromDpiAwarenessContext.argtypes = (ctypes.c_void_p,)
@@ -115,6 +131,8 @@ _companions: set[int] = set()
 
 
 def add_companion(hwnd: int) -> None:
+    if not IS_WINDOWS:
+        return _mac().add_companion(hwnd)
     if hwnd:
         _companions.add(int(hwnd))
 
@@ -122,7 +140,7 @@ def add_companion(hwnd: int) -> None:
 def lower_thread_priority() -> None:
     """当前线程降到「低于正常」：游戏要用 CPU 时先让给游戏（只影响抢不到核的时候）。"""
     if not IS_WINDOWS:
-        return
+        return _mac().lower_thread_priority()
     try:
         k = ctypes.windll.kernel32
         k.GetCurrentThread.restype = wintypes.HANDLE
@@ -148,7 +166,9 @@ def watch_foreground() -> None:
     """订阅前台切换事件，每次切换都记下来：两次查询之间切到别的程序再点浮窗也不会漏。
     要在有消息循环的线程（界面线程）调用；装不上就只靠 is_foreground 查询时记。"""
     global _fg_hook
-    if not IS_WINDOWS or _fg_hook is not None:
+    if not IS_WINDOWS:
+        return _mac().watch_foreground()
+    if _fg_hook is not None:
         return
     try:
         u = ctypes.windll.user32
@@ -166,7 +186,9 @@ def watch_foreground() -> None:
 
 
 def is_foreground(hwnd: int) -> bool:
-    if not IS_WINDOWS or not hwnd:
+    if not IS_WINDOWS:
+        return _mac().is_foreground(hwnd)
+    if not hwnd:
         return False
     fg = ctypes.windll.user32.GetForegroundWindow()
     if fg not in _companions:
@@ -206,7 +228,9 @@ def drawn_rects() -> list[Rect]:
 def give_focus(hwnd: int) -> None:
     """把前台（键盘焦点）还给游戏或客户端窗口。只有本进程当前在前台时 Windows 才允许，
     所以要在点了浮窗、浮窗刚被激活之后调用。不发送任何按键或鼠标。"""
-    if not IS_WINDOWS or not hwnd:
+    if not IS_WINDOWS:
+        return _mac().give_focus(hwnd)
+    if not hwnd:
         return
     u = ctypes.windll.user32
     if u.IsWindow(hwnd) and not u.IsIconic(hwnd) and u.GetForegroundWindow() != hwnd:
@@ -216,13 +240,13 @@ def give_focus(hwnd: int) -> None:
 def left_button_clicked() -> bool:
     """自上次调用以来左键是否按下过（GetAsyncKeyState 低位），只读输入状态。"""
     if not IS_WINDOWS:
-        return False
+        return _mac().left_button_clicked()
     return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x0001)
 
 
 def cursor_pos() -> tuple[int, int]:
     if not IS_WINDOWS:
-        return (0, 0)
+        return _mac().cursor_pos()
     pt = wintypes.POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
