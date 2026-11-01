@@ -13,3 +13,6 @@ lolhex/_build.py
 
 # 运行期 sqlite 临时文件（app_home 用 :memory: 时会落到 cwd）
 :memory:.ses
+
+# 游戏内截图（测试样本，只留本地）
+tests/fixtures/scoreboard_*.png
